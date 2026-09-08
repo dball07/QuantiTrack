@@ -1,0 +1,267 @@
+function pEM_overlayMovie(pEMTable,trackTable,pEM_path,deltaPP_th,maxPP_th,movieFPS,windowSz,states_deltaPP,minTrackLength,minBright,maxBright)
+
+%generates a movie of single molecules overlaid with the tracks color-coded
+%with the pEM state
+
+%parse inputs
+if nargin < 3 || isempty(pEMTable) || isempty(trackTable) || isempty(pEM_path)
+    [pEM_file, pEM_path]    = uigetfile('*.mat','Select pEM results file to open');
+    if summary_file == 0
+        return;
+    end
+
+    IN = load(fullfile(pEM_path, pEM_file));
+    pEMTable =IN.pEMTable;
+    trackTable = IN.trackTable;
+end
+
+if nargin < 4 || isempty(deltaPP_th)
+    deltaPP_th = 0.2;
+end
+
+if nargin < 5 || isempty(maxPP_th)
+    maxPP_th = 0;
+end
+if nargin < 6 || isempty(movieFPS)
+    movieFPS = 10;
+end
+if nargin < 7 || isempty(windowSz)
+    windowSz = 16;
+end
+windowHalfSz = (windowSz)/2;
+
+if nargin < 9 || isempty(minTrackLength)
+    minTrackLength = 100;
+end
+minSubTracks = floor(minTrackLength./trackTable.splitLength(1));
+
+if nargin < 10 || isempty(minBright)
+    minBright = 1000;
+end
+
+if nargin < 11 || isempty(maxBright)
+    maxBright = 6000;
+end
+
+
+save_dir = fullfile(pEM_path, 'pEM_tracks_overlay_movies');
+if isempty(dir(save_dir))
+    mkdir(save_dir);
+end
+
+%go through each entry in the summary_table
+trackFile_parentdir = fileparts(pEM_path);
+
+for i = 1:height(pEMTable)
+    % if the significant states aren't input, we will have to calculate them
+    optimalState = pEMTable.optimalState{i,:};
+    if nargin < 8 || isempty(states_deltaPP)
+        PP = pEMTable.posteriorProb{1,:};
+        
+        
+        %calculate the difference in the 2 best posterior probability
+
+
+        maxPP2 = maxk(PP,2,2);
+        deltaPP = maxPP2(:,1) - maxPP2(:,2);
+        states_all_deltaPP = optimalState(deltaPP >= deltaPP_th);
+        total_subTracks_deltaPP = length(states_all_deltaPP);
+
+        states_present = unique(states_all_deltaPP);
+        
+        state_pop = zeros(length(states_present),1);
+        for j = 1:length(states_present)
+            state_pop(j,:) = length(states_all_deltaPP(states_all_deltaPP == states_present(j)));
+        end
+        
+        %normalize
+        state_pop = state_pop./total_subTracks_deltaPP;
+
+        states_deltaPP = states_present(state_pop >= 0.05); %only retain states with a population more than 5% 
+    end
+    
+    %Reassign ambiguous states to be the same state
+    optStateMat = repmat(optimalState,1,length(states_deltaPP));
+    goodState_ind = (optStateMat == states_deltaPP');
+    goodState_ind = logical(sum(goodState_ind,2));
+
+    optimalState(~goodState_ind) = max(states_deltaPP) + 1;
+
+    states_deltaPP(end+1) = max(states_deltaPP) + 1;
+
+    % change the state indices to be from 1 to N
+    for j=1:length(states_deltaPP)
+        optimalState(optimalState == states_deltaPP(j)) = j;
+    end
+    
+    % Define the colors for the movie
+    if length(states_deltaPP) == 4
+        col     = [1 0 0; 0 0 1; 0.47,0.67,0.19; 0.65 0.65 0.65];%0.93,0.69,0.13; 0.65 0.65 0.65];
+    elseif length(states_deltaPP) == 3
+        col     = [1 0 0; 0 0 1; 0.65 0.65 0.65]; %0.47,0.67,0.19; 0.65 0.65 0.65];
+    elseif length(states_deltaPP) == 2
+        col     = [1 0 0; 0 0 1; 0.65 0.65 0.65]; %0.65 0.65 0.65];
+    elseif length(states_deltaPP) == 5
+        col     = [1 0 0; 0 0 1; 0.47,0.67,0.19; 0.93,0.69,0.13; 0.65 0.65 0.65];
+    end
+
+
+
+
+    splitX_all = pEMTable.splitX{i,:};
+    splitID_all = pEMTable.splitID{i,:};
+    trackID_all = pEMTable.trackID{i,:};
+
+    cellIDs_all = pEMTable.cellID{i,:};
+    existingcellIDs = unique(cellIDs_all);
+    
+
+
+    for j = 1:length(existingcellIDs)
+        cellTrackIDs = trackID_all(cellIDs_all == existingcellIDs(j));
+
+        %check if any of the tracks from this cell have enough track points
+        cellTrackIDs_present = unique(cellTrackIDs);
+        subTracks = zeros(length(cellTrackIDs_present),1);
+        for k = 1:length(cellTrackIDs_present)
+            curTrack = splitID_all(splitID_all == cellTrackIDs_present(k),:);
+            subTracks(k) = length(curTrack);
+        end
+
+        %only continue with this cell if at least one has enough track
+        %points
+        tracks2process = cellTrackIDs_present(subTracks >=minSubTracks);
+
+        if ~isempty(tracks2process)
+            %Determine the identifiers for the appropriate tracking file
+            trackTable_idx = find(trackTable.cellID == existingcellIDs(j));
+            condition = trackTable.condition{trackTable_idx,:};
+            session = trackTable.session{trackTable_idx,:};
+            name = trackTable.name{trackTable_idx,:};
+            xyt_cell = trackTable.xyt{trackTable_idx,:};
+            pxSize = trackTable.pixelSize(trackTable_idx);
+            dt = trackTable.interval(trackTable_idx);
+
+
+
+            trackFile_fullName = [condition,filesep,session,filesep,name];
+
+            trackFileLocation = dir(fullfile(trackFile_parentdir,'**',trackFile_fullName));
+%             trackFileLocation = [];
+            %if we don't automatically find in hte current folder, we will need to
+            %manually select it
+            if isempty(trackFileLocation)
+                [trackFile, trackFolder] = uigetfile(trackTable.name{i,:},'Select tracking results file',trackTable.name{i,:});
+                if trackFile == 0
+                    continue
+                end
+                tIN = load(fullfile(trackFolder,trackFile));
+                trackFile_parentdir = fileparts(trackFolder);
+            else
+                tIN = load(fullfile(trackFileLocation(1).folder,trackFileLocation(1).name));
+            end
+            %get the iamge Stack
+            imStack = tIN.Results.Data.imageStack;
+            
+            parfor k = 1:length(tracks2process)
+                
+                
+%                 get the optimal states for the segments of the current
+%                 track
+                optimalState_track = optimalState(splitID_all == tracks2process(k));
+                trkIndTT = find(trackTable.trackID{trackTable_idx,:} == tracks2process(k));
+                curSplit_ind = find(splitID_all == tracks2process(k));
+%                 curTrackSegs = zeros(trackTable.splitLength(1)+1,2,length(curSplit_ind));
+%                 curTrackSegs = zeros(trackTable.splitLength(1),2,length(curSplit_ind));
+                curTrackSegs = [];
+                xyt_track = xyt_cell{trkIndTT};
+%                 init_pt(:,:,1) = splitX_all{curSplit_ind(1)}(1,:);
+
+                for m = 1:length(curSplit_ind)
+                    %compile the track segment positions
+%                     curTrackSegs(:,:,m) = [init_pt; splitX_all{curSplit_ind(m)}];
+%                     curTrackSegs(:,:,m) = splitX_all{curSplit_ind(m)};
+
+
+                    %get the movie time-points for this track segment
+                    xy1 = splitX_all{curSplit_ind(m)}(1,:);
+                    xyt_ind1 = find(xyt_track(:,1) == xy1(1) & xyt_track(:,2) == xy1(2));
+
+                    t_tmp = xyt_track(xyt_ind1,3):xyt_track(xyt_ind1,3)+trackTable.splitLength(1)-1;
+%                     t_mat(:,m) = t_tmp';
+%                     if m == 1
+%                         t_mat(:,m) = [t_tmp(1); t_tmp'];
+%                     else
+%                         t_mat(:,m) = [t_mat(end,m-1); t_tmp'];
+%                     end
+                    optState= repmat(optimalState_track(m),trackTable.splitLength(1),1);
+                    curTrackSegs = [curTrackSegs; splitX_all{curSplit_ind(m)}./pxSize, t_tmp',optState];
+
+                    %update the point that gets added to the beginning of
+                    %the track
+%                     init_pt(:,:,m+1) = curTrackSegs(end,:,m);
+                    
+                end
+                %add the last point from the preceding track segment as the first point of the next segment to make it continuous in the movie
+%                 curTrackSegs = [init_pt(:,:,1:end-1); curTrackSegs];
+%                 
+%                 t_init = t_mat(end,:);
+%                 t_init = [t_mat(1,1), t_init(1:end-1)];
+%                 t_mat = [t_init; t_mat];
+%               
+                % Initialize the video writer
+                vid = VideoWriter(fullfile(save_dir, sprintf('switching_movie_cellID_%d_trackID_%d_clim_%d_%d', ...
+                    existingcellIDs(j), tracks2process(k), minBright, maxBright)), 'MPEG-4');
+                
+                
+                vid.FrameRate = movieFPS; %FPS for playback
+                
+                open(vid);
+
+                MovieFig = figure('Position', [1 1  0.5 1].*get(0, 'Screensize'));
+                x_min = max(1,floor(min(curTrackSegs(:,1)))-windowHalfSz);
+                y_min = max(1,floor(min(curTrackSegs(:,2)))-windowHalfSz);
+
+                x_max = min(imStack(1).width,floor(max(curTrackSegs(:,1)))+windowHalfSz);
+                y_max = min(imStack(1).height,floor(max(curTrackSegs(:,2)))+windowHalfSz);
+
+                xlims = [x_min, x_max];
+                ylims = [y_min, y_max];
+
+                for m = 1:size(curTrackSegs)
+                    imagesc(imStack(curTrackSegs(m,3)).data,[minBright, maxBright]); 
+                    colormap gray;
+                    axis image;
+                    set(gca,'Xlim',xlims);
+                    set(gca,'Ylim',ylims);
+                    hold on
+                    if m > 1
+                        for n = 2:m
+                            plot(curTrackSegs(n-1:n,1),curTrackSegs(n-1:n,2), '-', 'LineWidth', 1.5, ...
+                                'Color', col(curTrackSegs(n,4), :), 'LineWidth', 1, 'Marker','o', 'MarkerSize', 2,...
+                                'MarkerEdgeColor', col(curTrackSegs(n,4),:), 'MarkerFaceColor',col(curTrackSegs(n,4),:));
+                        end
+                    end
+                    drawnow
+                    ht = text(xlims(1)+5, ylims(1) + 1.5, sprintf('%.1f s', dt*(m-1)), 'Color', 'w', 'HorizontalAlignment', 'right', 'FontSize', 56);
+                    plot([xlims(2)-1-0.5/pxSize, xlims(2)-1], [ylims(2)-1 ylims(2)-1], 'Color', 'w', 'linewidth', 5)
+                    ht2 = text(xlims(2)- 1 - 0.25/pxSize, ylims(2) - 1.5, '500 nm', 'Color', 'w', 'FontSize', 24, 'HorizontalAlignment', 'center');
+                    
+
+
+                    vidFrame = getframe(gca);
+
+                    writeVideo(vid, vidFrame);
+                    hold off
+                end
+                close(vid);
+                close(MovieFig);
+    
+
+
+                
+            end
+        end
+    end
+end
+

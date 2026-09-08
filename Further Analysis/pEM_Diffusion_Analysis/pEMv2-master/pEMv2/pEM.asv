@@ -1,0 +1,102 @@
+function [baseVacf,baseP,posteriorProb,logLmax,trial] = pEM(deltaX,baseVacf,baseP,params,trackInfo)
+%--------------------------------------------------------------------------
+% This function runs the EM algorithm for a set of perturbation trials, i.e.
+% bootstrap set of particle tracks. If the new set of parameters yields a
+% higher likelihood with the original data, then the parameters are
+% updated.
+% 
+% Code written by: 
+%       Peter Koo
+%       Yale University, Department of Physis, New Haven, CT, 06511  
+%--------------------------------------------------------------------------
+
+
+% calculate current likelihood and gamma
+[basegamma,logLmax] = Expectation(deltaX,baseVacf,baseP,trackInfo);
+
+% begin perturbation EM to protein trajectories
+trial = struct([]);
+if params.verbose
+    fprintf('\n')
+    str1 = sprintf('Perturbation trial #');
+    fprintf(str1);
+end
+for j = 1:params.numPerturbation
+    
+    % display current iteration
+    if j == 1
+        str2 = sprintf('%.1d of %.1d\n',j,params.numPerturbation);
+        strLen = length(str2);
+%         str = strcat(str1,str2);
+        fprintf('%.1d of %.1d\n',j,params.numPerturbation);
+    else
+%         str2_1 = sprintf(repmat('\b',1,strLen));
+        fprintf(repmat('\b',1,strLen));
+        str2_2 = sprintf('%.1d of %.1d\n',j,params.numPerturbation);
+%         str = strcat(str2_1,str2_2);
+        strLen = length(str2_2);
+        fprintf('%.1d of %.1d\n',j,params.numPerturbation);
+    end
+%     if j == 1
+%         str = sprintf('Perturbation trial #%.1d of %.1d\n',j,params.numPerturbation);
+%         strLen = length(str);
+% %         str = strcat(str1,str2,str);
+%         fprintf(str);
+%     else
+%         str_1 = sprintf(repmat('\b',1,strLen));
+%         str_2 = sprintf('Perturbation trial #%.1d of %.1d\n',j,params.numPerturbation);
+%         str = strcat(str_1,str_2);
+%         strLen = length(str_2);
+%         fprintf(str);
+%     end
+%     disp(['Perturbation trial #' num2str(j)]);
+    
+    % perturb likelihood surface with bootstrap resampled data
+    trackIndex = ceil(rand(trackInfo.numberOfTracks,1)*trackInfo.numberOfTracks);
+    bootStrapDeltaX = cell(trackInfo.numberOfTracks,1);
+    vacf_exp = zeros(length(trackIndex),trackInfo.numFeatures,trackInfo.dimensions);
+    for i = 1:length(trackIndex)
+        bootStrapDeltaX{i} = deltaX{trackIndex(i)};
+        vacf_exp(i,:,:) = trackInfo.vacf_exp(trackIndex(i),:,:);
+    end
+
+    % calculate new track properties of resampled data
+    bsTrackInfo = trackInfo;
+    bsTrackInfo.vacf_exp = vacf_exp;
+    [vacf_est,P_est,gamma_est,logL] = EM(bootStrapDeltaX,baseVacf,baseP,params,bsTrackInfo);    
+
+    % store results from each trial
+    trial(i).vacf_est = vacf_est;
+    trial(i).P_est = P_est;
+    trial(i).gamma_est = gamma_est;
+    trial(i).L = logL;
+
+    % calculate log-likelihood on original data set with bootstrap parameters
+    [gamma,Lnew] = Expectation(deltaX,vacf_est,P_est,trackInfo);
+
+    % if bootstrap parameters yield higher likelihood, then employ a full EM with new parameters
+    if Lnew > logLmax
+%         strLen = 0;
+%         fprintf('\n')
+
+%         disp('Higher likelihood found');
+        [vacf_est,P_est,gamma_est,logL] = EM(deltaX,vacf_est,P_est,params,trackInfo);    
+        baseVacf = vacf_est;
+        baseP = P_est;
+        basegamma = gamma_est;
+        logLmax = logL(end);
+
+        trial(i).vacf_est2 = vacf_est;
+        trial(i).P_est2 = P_est;
+        trial(i).gamma_est2 = gamma_est;
+        trial(i).logL2 = logL;
+    end    
+end
+fprintf('\n')
+
+% calculate the posterior probability of each diffusive state
+posteriorProb = sum(basegamma,3)/trackInfo.dimensions;
+
+
+
+
