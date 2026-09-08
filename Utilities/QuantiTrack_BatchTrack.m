@@ -1,0 +1,602 @@
+function [allProfiles,currentProfileID] = QuantiTrack_BatchTrack(lpass,hpass,threshold,windowSz,isFitPSF,maxJump,shTrack,closeGaps,pxSize,frameInterval,lambda,NA,useParallel,allProfiles,currentProfileID,figH, varargin)
+% Performs initial tracking on a group of Tif files using constant
+% settings. Note that in order to run this, it is necessary to use the
+% ROI_GUI tool to specify ROIs in all files first.
+
+inputDir = uigetdir(pwd,'Select the parent directory containing all movies and masks');
+%locate mask files
+if inputDir == 0
+    return
+end
+maskFiles = dir(fullfile(inputDir,['**',filesep,'mask*.mat']));
+for i = 1:length(maskFiles)
+    pnames{i,:} = maskFiles(i).folder;
+    fnames{i,:} = [maskFiles(i).name(6:end-4), '.tif'];
+end
+if nargin < 13
+    useParallel = 0;
+end
+% [fnames,pnames] = uigetfile('*.tif','Select the images to open','','MultiSelect','on');
+
+if nargin < 14
+    savefold = uigetdir(pwd,'Select a save location');
+else
+    %setup to save to the database
+    %Call the save application to set up
+    trackingSaveDir = allProfiles(currentProfileID).trackingSaveDir;
+    lastCellProtein = allProfiles(currentProfileID).lastCellProtein;
+    lastCondition = allProfiles(currentProfileID).lastCondition;
+    lastSession = allProfiles(currentProfileID).lastSession;
+    lastName = fnames{1,:};
+
+    qt_save = QuantiTrack_SaveToDatabase(trackingSaveDir,lastCellProtein,...
+        lastCondition,lastSession,lastName,figH,get(gcf,'Position'));
+    waitfor(qt_save);
+
+
+    save_vars = getappdata(figH,'QuantiTrack_SavePars');
+    if isempty(save_vars)
+        return
+    end
+    %update the default values
+    allProfiles(currentProfileID).trackingSaveDir = save_vars{1};
+    allProfiles(currentProfileID).lastCellProtein = save_vars{2};
+    allProfiles(currentProfileID).lastCondition  = save_vars{3};
+    allProfiles(currentProfileID).lastSession  = save_vars{4};
+    allProfiles(currentProfileID).lastName = lastName;
+
+    allProfiles(currentProfileID).frameTime = frameInterval;
+    allProfiles(currentProfileID).objNA = NA;
+    allProfiles(currentProfileID).pixelSize = pxSize;
+    allProfiles(currentProfileID).lambda = lambda;
+
+    profile = allProfiles(currentProfileID);
+    savefold = fullfile(profile.trackingSaveDir,profile.lastCellProtein, ... 
+        profile.lastCondition, profile.lastSession);
+end
+
+BPorLoG = questdlg('Do you want to use a Bandpass or LoG filter?', 'Filter Choice','Bandpass','LoG','Local BG','Bandpass');
+if strcmp(BPorLoG,'Local BG')
+     % maybe add ROI if too slow
+    locOptions = allProfiles(currentProfileID).MTT_params;
+    locOptions.locParallel = useParallel;
+    locOptions.rLive = 0;
+    locOptions.spatialCorrection = 0;
+    
+    % locOptions.maxOptimIter = 50;
+    locOptions.termTol = -2;
+    locOptions.isRadiusTol = 0;
+    locOptions.radiusTol = 50;
+    locOptions.posTol = 1.5;
+    
+    locOptions.w2d = windowSz; %detection box
+    prompt = {'NA',...
+        'Em Wavelength (nm)','Max. Iterations','Error Rate (10^{value})'};
+    
+    dlgtitle = 'Particle Detection Parameters';
+    definputs = {num2str(allProfiles(currentProfileID).objNA),...
+        num2str(allProfiles(currentProfileID).lambda),...
+        num2str(locOptions.maxOptimIter),...
+        '-6'};
+    opts.Interpreter = 'tex';
+    locInputs = inputdlg(prompt,dlgtitle,1,definputs,opts);
+    if isempty(locInputs)
+        return
+    end
+    
+    
+    
+    psfStd = 1.35*...
+            0.55*(0.001*str2double(locInputs{2}))/...
+            str2double(locInputs{1})/1.17/...
+            pxSize/2;
+    locOptions.psfStd = psfStd; %PSF width (could be calculated)
+    locOptions.errorRate = str2double(locInputs{4});
+    locOptions.dfltnLoops = locOptions.deflateLoops;
+    locOptions.minInt = locOptions.minIntensity;
+
+    
+    NNorLAP = 'MTT';
+    % NNorLAP = questdlg('Do you want to Track using Nearest Neighbor or LAP?','Tracking Choice','Nearest Neighbor','LAP','MTT','Nearest Neighbor');
+else
+    NNorLAP = questdlg('Do you want to Track using Nearest Neighbor or LAP?','Tracking Choice','Nearest Neighbor','LAP','Nearest Neighbor');
+end
+
+if strcmp(NNorLAP,'MTT')
+    options = allProfiles(currentProfileID).MTT_params;
+
+    prompt = {'Max. Diffusion Coefficient(\mum^2/s)',...
+        'Averaging Time Window','Counts/photon'};
+    
+    dlgtitle = 'Tracking Parameters';
+    maxD_def = calcDfromJump(maxJump, pxSize, frameInterval, 4);
+    definputs = {num2str(maxD_def),options.statWin,options.countsPerPhoton};
+    opts.Interpreter = 'tex';
+    trkInputs = inputdlg(prompt,dlgtitle,1,definputs,opts);
+    if isempty(trkInputs)
+        return
+    end
+    options = allProfiles(currentProfileID).MTT_params;
+    options.pxSize = pxSize;
+    options.frameSize = frameInterval*1000;
+    options.windowSz = windowSz;
+    options.goodTr = shTrack;
+    options.maxD = str2double(trkInputs{1});
+    % options.errorRate = str2double(locInputs{4});
+    options.dfltnLoops = options.deflateLoops;
+    options.statWin = str2double(trkInputs{2});
+    options.minInt = options.minIntensity;
+    options.countsPerPhoton = str2double(trkInputs{3});
+    
+    
+    
+%     psfStd = 1.35*...
+%             0.55*(0.001*str2double(locInputs{4}))/...
+%             str2double(locInputs{3})/1.17/...
+%             str2double(locInputs{1})/2;
+    options.psfStd = locOptions.psfStd;
+    options.T_off = -1*(closeGaps);
+    
+    options.searchExpFac = 1.2;
+    options.maxComp = 3;
+    options.intLawWeight = 0.9;
+    options.diffLawWeight = 0.5;
+    
+    options.trackStart = 1;
+    options.trackEnd = inf;
+    
+    options.isThreshDensity = 0;
+    options.isThreshSNR = 0;
+    options.isThreshLocPrec = 0;
+    options.hROI = [];
+    
+    options.minLoc = 0;
+    options.maxLoc = inf;
+    options.minSNR = 0;
+    options.maxSNR = inf;
+end
+
+
+
+if ~iscell(fnames)
+    fnames = {fnames};
+end
+if ~iscell(pnames)
+    pnames = {pnames};
+end
+if fnames{1} ~= 0
+    
+    threshold_spec = threshold;
+    windowSz_spec = windowSz;
+    maxJump_spec = maxJump;
+    shTrack_spec = shTrack;
+    closeGaps_spec = closeGaps;
+    
+    hBatchbar = waitbar(0,'Batch Processing','Name', 'Batch Tracking','Color', get(0,'defaultUicontrolBackgroundColor'),'Units','pixels');
+    pos = get(hBatchbar,'Position');
+    pos(2) = pos(2) + pos(4) + 30;
+    set(hBatchbar,'Position',pos);
+    
+    for i = 1:length(fnames)
+        clear Results;
+        Results.Data.fileName = fnames{i};
+        Results.Data.pathName = pnames{i};
+        waitbar((i-1)/length(fnames),hBatchbar,['Batch Processing ',...
+            num2str(i),' of ',num2str(length(fnames))]);
+        %Load in the image
+        [Results.Data.imageStack,Results.Data.nImages] = TIFread(fullfile(pnames{i}, fnames{i}));
+        
+        Results.Data.clims = [min(min(Results.Data.imageStack(1).data))...
+            max(max(Results.Data.imageStack(1).data))];
+        
+        %filter the image
+        
+        for j =  1:Results.Data.nImages
+            if strcmp(BPorLoG,'Bandpass')
+                Results.Process.filterStack(j).data = ...
+                    bpass(Results.Data.imageStack(j).data, lpass, hpass);
+            elseif strcmp(BPorLoG,'LoG') %LoG filtering
+                
+                filt_log = fspecialCP3D_MT('2D LoG',hpass,lpass);
+                Results.Process.filterStack(j).data = ...
+                    imfilter(double(Results.Data.imageStack(j).data), filt_log,'symmetric') *(-1);
+                Results.Process.filterStack(j).data(Results.Process.filterStack(j).data < 0) = 0;
+            else
+                Results.Process.filterStack = Results.Data.imageStack;
+            end
+        end
+        
+            
+        Results.Process.clims = [min(min(Results.Process.filterStack(1).data))...
+            max(max(Results.Process.filterStack(1).data))];
+        %load the ROI info
+        anymask = dir(fullfile(pnames{i},['mask-',fnames{i}(1:9)]));
+        curmask = dir(fullfile(pnames{i},['mask-',fnames{i}(1:end-3),'mat']));
+        
+        if ~isempty(curmask)
+            ROIfile = curmask(1).name;
+        elseif i == 1 && isempty(curmask) && ~isempty(anymask)
+            useMask = questdlg('Could not locate exact match for file name, Would you like to use the other existing mask?', 'No mask file','Yes','No','Yes');
+            if strcmp(useMask,'Yes')
+                ROIfile = anymask(1).name;
+            else
+                return
+            end
+        elseif i > 1 && isempty(curmask) && ~isempty(anymask)
+            if strcmp(useMask,'Yes')
+                ROIfile = anymask(1).name;
+            else
+                return
+            end
+        elseif isempty(curmask) && isempty(anymask)
+            return
+        
+                
+        end 
+%         ROIfile = ['mask-',fnames{i}(1:end-3),'mat'];
+        ROIinfo = load(fullfile(pnames{i},ROIfile));
+        Results.Process.ROIpos = ROIinfo.ROIpos;
+        Results.Process.ROIimage = ROIinfo.ROIimage;
+        Results.Process.ROIlabel = ROIinfo.ROIlabel;
+        Results.Process.ROIClass = ROIinfo.ROIClass;
+        
+        
+        TrackROIsepAns = 'Yes';
+        %         if i == 1 && size(Results.Process.ROIpos,1) > 1
+        %             TrackROIsepAns = questdlg('Do you expect particles to move from one ROI to another?','ROI Particle Tracking','Yes','No','Yes');
+        %         elseif i == 1
+        %             TrackROIsepAns = 'No';
+        %         end
+        
+        %Find Particles
+        if ~strcmp(BPorLoG,'Local BG')
+            if threshold_spec > 0 && windowSz_spec > 0
+                Results.Tracking.Centroids = findParticles(Results.Process.filterStack, threshold, hpass,windowSz,useParallel);
+
+                if isFitPSF
+                    CentroidInRoi = InsideROIcheck2(Results.Tracking.Centroids, Results.Process.ROIimage);
+
+                    Centroid = CentroidInRoi;
+                    if ~isempty(Centroid)
+                        Particles = peak_fit_psf(Results.Data.imageStack,...
+                            Centroid,windowSz,windowSz,useParallel);
+                        Particles2 = InsideROIcheck2(Particles,Results.Process.ROIimage);
+                        Results.Tracking.Particles = Particles2;
+                    else
+                        Results.Tracking.Particles = zeros(1,13);
+                    end
+                end
+                Results.Tracking.Peaks = peaks;
+            end
+        else
+            locOptions.roi = [1, 1, Results.Data.imageStack(1).width,Results.Data.imageStack(1).height];
+            Results.Tracking.Centroids = SLIMfast_loc_wrapper(Results.Data.imageStack,locOptions);
+            CentroidInRoi = InsideROIcheck2(Results.Tracking.Centroids, Results.Process.ROIimage);
+            Centroid = CentroidInRoi;
+            Results.Tracking.Centroids = Centroid;
+            if ~isempty(Centroid)
+                Results.Tracking.Particles = Centroid;
+            else
+                Results.Tracking.Particles = zeros(1,13);
+            end
+        end
+            
+        if closeGaps_spec == 0
+            closeGaps = Results.Parameters.Tracking(6);
+        else
+            closeGaps = closeGaps_spec;
+        end
+        if shTrack_spec == 0
+            shTrack = Results.Parameters.Tracking(7);
+        else
+            shTrack = shTrack_spec;
+        end
+        if maxJump_spec == 0
+            maxJump = Results.Parameters.Tracking(5);
+        else
+            maxJump = maxJump_spec;
+        end
+        Trackparam.mem = closeGaps;
+        Trackparam.good = shTrack;
+        Trackparam.dim         =  2;
+        Trackparam.quiet       =  0;
+        if isFitPSF % if particle position has been evaluated via PSF fitting
+            if strcmp(NNorLAP,'Nearest Neighbor')
+                Particles = Results.Tracking.Particles(:,[10 11 6 13]);
+            elseif strcmp(NNorLAP,'LAP')
+                Particles = Results.Tracking.Particles(:,[10, 17, 11, 18, 7, 14, 6, 13]);
+            else
+                noise_shot = sqrt(max(parts(:, 9), 0));
+                Particles = [Results.Tracking.Particles(:,1), ...
+                    Results.Tracking.Particles(:,2), ...
+                    Results.Tracking.Particles(:,3), ...
+                    noise_shot,...
+                    Results.Tracking.Particles(:,9), ...
+                    Results.Tracking.Particles(:,8), ...
+                    Results.Tracking.Particles(:,6)];
+
+                Particles(:,1:2) = Particles(:,1:2) - 1;
+            end
+        else
+            if strcmp(NNorLAP,'Nearest Neighbor')
+                Particles = handles.Tracking.Centroids(:,[1 2 6 7]);
+            elseif strcmp(NNorLAP,'LAP')
+                warndlg('Particles must be fit to a 2D Gaussian in order to perform LAP tracking');
+                return
+            else
+                noise_shot = sqrt(max(parts(:, 9), 0));
+                Particles = [Results.Tracking.Particles(:,1), ...
+                    Results.Tracking.Particles(:,2), ...
+                    Results.Tracking.Particles(:,3), ...
+                    noise_shot,...
+                    Results.Tracking.Particles(:,9), ...
+                    Results.Tracking.Particles(:,8), ...
+                    Results.Tracking.Particles(:,6)];
+
+                Particles(:,1:2) = Particles(:,1:2) - 1;
+                isFitPSF = 1;
+            end
+        end
+%         if isFitPSF % if particle position has been evaluated via PSF fitting
+%             Particles = Results.Tracking.Particles(:,[10 11 6 13]);
+%         else
+%             Particles = Results.Tracking.Centroids(:,[1 2 6 7]);
+%         end
+        
+        if ~isempty(varargin)
+            Part_tmp1 = Particles(Particles(:,3) >= varargin{1}(1),:);
+            Part_tmp2 = Part_tmp1(Part_tmp1(:,3) <= varargin{1}(2),:);
+            Particles = Part_tmp2;
+        end
+        if ~isempty(Particles) && max(max(abs(Particles))) > 0
+            if strcmp(NNorLAP,'Nearest Neighbor')
+                if strcmp(TrackROIsepAns,'No')
+                    %testing tracking individual ROIs separately
+    
+                    Tracks = cell(max(Particles(:,4)),1);
+                    TrkPtsAdded = cell(max(Particles(:,4)),1);
+                    errorcode = zeros(max(Particles(:,4)),1);
+                    nTrkPtsAdd = 0;
+                    ROIstring = Results.Process.ROIlabel;
+                    for m = 1:max(Particles(:,4))
+                        Particles2Track = Particles(Particles(:,4) == m,1:3);
+                        if ~isempty(Particles2Track)
+                            fprintf('Performing Tracking on %s\n',ROIstring{m,:});
+                            fprintf('--------------------------\n');
+                            [Tracks{m,:}, TrkPtsAdded{m,:}, errorcode(m,:)] = trackfunctIG(Particles2Track,maxJump,Trackparam);
+                            nTrkPtsAdd = nTrkPtsAdd + size(TrkPtsAdded{m,:},1);
+                        else
+                            fprintf('No particles found in %s, so we cannot track in this ROI\n',ROIstring{m,:});
+                            Tracks{m,:} = [];
+                            TrkPtsAdded{m,:} = [];
+                            errorcode(m,:) = 1;
+                        end
+                    end
+    
+                    Tracks_all = [];
+                    Track_ind = 1;
+                    % TrkPtsAdded2 = [];
+                    % for i = 1: size(TrkPtsAdded,1)
+                    %     TrkPtsAdded2 = [TrkPtsAdded2;TrkPtsAdded{i,:}];
+                    % end
+                    for m = 1:size(Tracks,1)
+                        Tracks{m,:}(:,5) = m*ones(size(Tracks{m,:},1),1);
+                        Tracks_tmp = Tracks{m,:};
+    
+                        for j = 1:max(Tracks_tmp(:,4))
+                            iTrack = Tracks_tmp(Tracks_tmp(:,4) == j,:);
+                            if ~isempty(iTrack)
+                                iTrack(:,4) = Track_ind;
+                                Track_ind = Track_ind + 1;
+                                Tracks_all = [Tracks_all;iTrack];
+                                TrkPtsAdded2{Track_ind,:} = TrkPtsAdded{m,:}{j,:};
+                            end
+                        end
+    
+                        %     TrackPtsAdded2{init_TrkPt:fin_TrkPt,:} = TrkPtsAdded{i,:};
+    
+                    end
+    
+                    if ~isempty(Tracks_all)
+                        Tracks_all2 = sortrows(Tracks_all,3);
+                        test2 = [];
+                        used = [];
+                        t_ind = 1;
+                        TrkPtsAdded = TrkPtsAdded2;
+                        TrkPtsAdded2 = cell(size(TrkPtsAdded));
+                        for m = 1:size(Tracks_all2,1)
+                            if isempty(find(Tracks_all2(m,4) == used))
+                                test = Tracks_all2(Tracks_all2(:,4) == Tracks_all2(m,4),:);
+                                test(:,4) = t_ind;
+                                TrkPtsAdded2{t_ind,:} = TrkPtsAdded{Tracks_all2(:,4),:};
+                                t_ind = t_ind +1;
+                                test2 = [test2;test];
+    
+                                used = [used; Tracks_all2(m,4)];
+                            end
+                        end
+                        TrkPtsAdded = TrkPtsAdded2;
+                        Tracks = test2;
+                    else
+                        TrkPtsAdded = [];
+                        Tracks = [];
+                    end
+                else
+                    Particles(Particles(:,1) == 0,:) = [];
+                    if ~isempty(varargin)
+                        Particles(:,3) = Particles(:,3) - varargin{1}(1) + 1;
+                    end
+                    Part_tmp = [];
+                    for m = 1:max(Particles(:,3))
+                        PartInCurFrame = Particles(Particles(:,3) == m,:);
+                        if ~isempty(PartInCurFrame)
+                            Part_tmp = [Part_tmp; PartInCurFrame];
+                        else
+                            addvec = [0 0 m 0];
+                            Part_tmp = [Part_tmp; addvec];
+                        end
+                    end
+                    Particles = Part_tmp;
+    
+    
+                    [Tracks, TrkPtsAdded, errorcode] = trackfunctIG(Particles(:,1:3),maxJump,Trackparam);
+    
+                    %             parameters.Gv = 8;
+                    %             parameters.Gd = 8;
+                    %             parameters.Twin = 3;
+                    %             parameters.shTr = 2;
+                    %             parameters.gaps = 3;
+                    %             [Tracks,TrkPtsAdded] = ngaTracking(Particles,parameters);
+                    %             errorcode = 0;
+                end
+            elseif strcmp(NNorLAP, 'LAP')
+                params.uTrack = allProfiles(currentProfileID).LAP_params;
+                params.uTrack.maxSearchRadius = maxJump;
+                params.uTrack.minTrackLen = Trackparam.good;
+                params.uTrack.mem = Trackparam.mem;
+
+                % params.uTrack = struct('maxSearchRadius',maxJump,'good', Trackparam.good, 'mem',Trackparam.mem);
+                Tracks = uTrackWrapper(Particles,params.uTrack);
+            else
+                options.roi = [0 0 Results.Data.imageStack(1).width...
+                    Results.Data.imageStack(1).height];
+                
+                Tracks = SLIMfast_trk_wrapper(Particles,Results.Data.imageStack,options);
+            end
+        else
+            errorcode = 1;
+            Tracks = [];
+
+        end
+        
+        if (strcmp(NNorLAP,'Nearest Neighbor') && min(errorcode) == 0 && ~isempty(Tracks))  || (strcmp(NNorLAP,'LAP') && ~isempty(Tracks))|| (strcmp(NNorLAP,'MTT') && ~isempty(Tracks))
+            Tracks = InsideROIcheck2(Tracks,Results.Process.ROIimage);
+            Results.Tracking.Tracks = Tracks;
+            if isFitPSF
+                ParticlesNew = Results.Tracking.Particles;
+                
+                x_ind = 10;
+                y_ind = 11;
+            else
+                ParticlesNew = Results.Tracking.Centroids;
+                x_ind = 1;
+                y_ind = 2;
+            end
+            Particles = ParticlesNew;
+            if ~isempty(varargin)
+                Part_tmp1 = Particles(Particles(:,6) >= varargin{1}(1),:);
+                Part_tmp2 = Part_tmp1(Part_tmp1(:,6) <= varargin{1}(2),:);
+                Particles = Part_tmp2;
+                Particles(:,6) = Particles(:,6) - varargin{1}(1) + 1;
+                nImages = varargin{1}(2) - varargin{1}(1) + 1;
+            else
+                nImages = Results.Data.nImages;
+            end
+            for j = 1:size(Tracks,1)
+                x_pos = Tracks(j,1);
+                y_pos = Tracks(j,2);
+                frame_num = Tracks(j,3);
+                
+                pIx1 = find(Particles(:,x_ind) == x_pos & ...
+                    Particles(:,y_ind) == y_pos & ...
+                    Particles (:,6) == frame_num);
+                if isempty(pIx1)
+                    ParticleAdd(:,1) = x_pos;
+                    ParticleAdd(:,2) = y_pos;
+                    ParticleAdd(:,6) = frame_num;
+                    if isFitPSF
+                        ParticleAdd(:,10:11) = ParticleAdd(:,1:2);
+                        ParticleAdd(:,12) = 0;
+                        if isfield(Results.Process,'ROIpos')
+                            ParticleAdd(:,13) = 0;
+                        end
+                        ParticleAdd(:,14:18) = zeros(1,5);
+                    else
+                        if isfield(Results.Process,'ROIpos')
+                            ParticleAdd(:,7) = 0;
+                        end
+                    end
+                    ParticlesNew = [ParticlesNew; ParticleAdd];
+                end
+                
+                
+            end
+            ParticlesNew = InsideROIcheck2(ParticlesNew,Results.Process.ROIimage);
+            if isFitPSF
+                ParticlesNew = sortrows(ParticlesNew,[6,13]);
+                Results.Tracking.Particles = ParticlesNew;
+            else
+                ParticlesNew = sortrows(ParticlesNew,[6,7]);
+                Results.Tracking.Centroids = ParticlesNew;
+            end
+            
+            
+            %PreAnalysis
+            Tracks = Results.Tracking.Tracks;
+            %             if isFitPSF
+            %                 Particles = Results.Tracking.Particles;
+            %             else
+            %                 Particles = Results.Tracking.Centroids;
+            %             end
+            params.lambda = lambda;
+            params.NA = NA;
+            [Results.PreAnalysis.Tracks_um, Results.PreAnalysis.NParticles, Results.PreAnalysis.IntensityHist] = preProcess_noGUI(Tracks,Results.Data.imageStack,...
+                Particles, pxSize, nImages, Results.Data.fileName,Results.Process.ROIpos,params);
+            Results.isFitPSF = isFitPSF;
+            Results.Analysis = [];
+            Results.Parameters.Used.Tracking = [lpass, hpass, threshold,windowSz, maxJump,closeGaps,shTrack];
+            Results.Parameters.Tracking = [lpass, hpass, threshold,windowSz, maxJump,closeGaps,shTrack];
+            if exist('locOptions','var')
+                Results.Parameters.Used.SLIMfast = locOptions;
+            end
+            if exist('options','var')
+                Results.Parameters.Used.MTT_Tracking = options;
+            end
+            Results.Parameters.Used.Acquisition.pixelSize = pxSize;
+            Results.Parameters.Used.Acquisition.frameTime = frameInterval;
+            Results.Parameters.Used.Acquisition.NA = NA;
+            Results.Parameters.Used.Acquisition.EmWavelength = lambda;
+
+            Results.Parameters.Acquisition = Results.Parameters.Used.Acquisition;
+            Version = 2;
+
+            profile.lastName = [fnames{i}(1:end-4),'_preprocess.mat'];
+            save([savefold, filesep,profile.lastName],'Results','Version');
+            
+            trackTable = generateTrackTable(Results,profile);
+            tt_saveLoc = fullfile(profile.trackingSaveDir,profile.lastCellProtein);
+
+            %Check if there is an existing trackTable for this cell/protein
+            preExistingTrackTable = dir(fullfile(tt_saveLoc,'*trackTable*'));
+
+            if ~isempty(preExistingTrackTable)
+                input = load(fullfile(tt_saveLoc,preExistingTrackTable(1).name));
+                t = input.trackTable;
+                last_cellID = t.cellID(height(t));
+                last_trackID = t.trackID{height(t)}(end);
+                last_movieID = t.movieID(height(t));
+
+                trackTable.cellID = trackTable.cellID + last_cellID;
+                trackTable.movieID = trackTable.movieID + last_movieID;
+                for j = 1:height(trackTable)
+                    trackTable.trackID{j} = trackTable.trackID{j} + last_trackID;
+                end
+
+                trackTable = [t; trackTable];
+                save(fullfile(tt_saveLoc,preExistingTrackTable(1).name),'trackTable','-v7.3');
+            else
+                savename  = sprintf('trackTable_%s_%s.mat', profile.lastCellProtein, ...
+                    datestr(now, 'yyyy-mm-dd_THHMM'));
+                save(fullfile(tt_saveLoc,savename),'trackTable','-v7.3');
+
+            end
+            waitbar(i/length(fnames),hBatchbar,['Batch Processing ',...
+                num2str(i),' of ',num2str(length(fnames))]);
+
+        end
+        
+        
+    end
+    allProfiles(currentProfileID).lastName = fnames{i,:};
+end
+delete(hBatchbar);
