@@ -1,0 +1,114 @@
+function summary_table = QTprocessSpotOnFiles(base_dir, Params, useParallel, figH)
+    % This function processes Spot-On input files using parallel computing
+    % and outputs a summary table where each row corresponds to the output
+    % of SpotOn_core_vKW for one dataset.
+    
+    if nargin < 3 || isempty(useParallel)
+        useParallel = 0;
+    end
+
+    if nargin < 4 
+        figH = [];
+    end
+
+    % Change directory to the base directory
+    cd(base_dir);
+
+    % Create a list of locations that contain the mat files to be analyzed
+    dir_list = dir(fullfile(base_dir, '*', 'Spot-on_input*.mat'));
+
+    % Initialize a cell array to store results
+    results = cell(length(dir_list), 1);
+
+    % Parallel loop to process each file
+    if ~isempty(figH)
+
+        ind_complete = 0;
+        d = uiprogressdlg(figH,'Title','Processing SpotOn files','Indeterminant...
+            'Message','Analyzing bootstrapped data with SpotOn');
+    end
+
+    if useParallel == 1
+        parfor i = 1:length(dir_list)
+            results{i} = processSingleSpotOnFile(dir_list(i), base_dir, Params);
+            ind_complete = ind_complete + 1;
+            
+            fprintf('\n Dataset %d/%d DONE\n', i, length(dir_list));
+        end
+
+    % Combine all results into a summary table
+    summary_table = vertcat(results{:});
+
+    % Adjust for the untracked particles
+    summary_table.trueFracBound     = summary_table.FracBound.*summary_table.N_tracked_particles./summary_table.N_detected_particles;
+
+    % Adjust the confidence intervals
+    for i=1:height(summary_table)
+        summary_table.ci_trueFracBound{i}  = summary_table.ci_FracBound{i}...
+            .*summary_table.N_tracked_particles(i)./summary_table.N_detected_particles(i); 
+    end 
+
+    % Only save the relevant fields to reduce file size
+    summary_table   = summary_table(:, [1,2,6,7,8,9,13,15,17,19,20,22]);
+end
+
+function spotOnTable = processSingleSpotOnFile(file, base_dir, Params)
+    % Process a single Spot-On input file and return a table with results
+
+    % Navigate to the folder containing the file
+    cd(file.folder);
+
+    % Initialize data structure
+    data_struct = struct([]);
+    data_struct(1).path = [file.folder filesep];
+    data_struct(1).workspaces = {file.name};
+    data_struct(1).Include = [1];
+
+    % Extract sample name
+    tmp = find(file.name == '_', 2);
+    SampleName = file.name(tmp(2)+1:end-4);
+    SampleName(SampleName == '_') = ' ';
+
+    % Set parameters
+    
+    Params.curr_dir = pwd; Params.SampleName = SampleName; Params.data_struct = data_struct;
+
+    % Add Spot-On package paths
+    addpath(genpath([pwd, filesep, 'SpotOn_package', filesep]));
+    display('Added local paths for Spot-on core mechanics');
+
+    % Run Spot-On core function
+    [Output_struct] = SpotOn_core_vKW(Params);
+
+    % Load the spotOnTable from the mat file
+    load(fullfile(file.folder, file.name), 'spotOnTable');
+
+    % Extract output variables and confidence intervals
+    output_vars = Output_struct.merged_model_params;
+    ci = Output_struct.merged_model_params_ci;
+
+    ci_D_Free = ci(1,:);
+    ci_D_bound = ci(2,:);
+    ci_FracBound = ci(3,:);
+    ci_LocError = ci(4,:);
+
+    % Update spotOnTable with results
+    spotOnTable.Params{1} = Params;
+    spotOnTable.Output_struct{1} = Output_struct;
+    spotOnTable.D_bound(1) = output_vars(2);
+    spotOnTable.ci_D_Bound{1} = ci_D_bound;
+    spotOnTable.D_Free(1) = output_vars(1);
+    spotOnTable.ci_D_Free{1} = ci_D_Free;
+    spotOnTable.FracBound(1) = output_vars(3);
+    spotOnTable.ci_FracBound{1} = ci_FracBound;
+    spotOnTable.FracFree(1) = 1 - output_vars(3);
+    spotOnTable.LocErr(1) = output_vars(4);
+    spotOnTable.ci_LocErr{1} = ci_LocError;
+
+    % Save the updated Spot-On table
+    save(fullfile(file.folder, sprintf('Spot-on_output_%s', file.name(tmp(2)+1:end))), 'spotOnTable');
+
+    % Return to base directory
+    cd(base_dir);
+    %fprintf('\n Dataset %d DONE\n', i);
+end
