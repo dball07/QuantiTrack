@@ -59,7 +59,7 @@ handles = QT_menuSetup(handles);
 handles.output = hObject;
 
 %Check if parallel computing toolbox is available
-gui_version_str = 'v2026.09.04';
+gui_version_str = 'v2026.09.29';
 VER = ver;
 
 
