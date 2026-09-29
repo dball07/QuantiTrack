@@ -71,8 +71,8 @@ handles.LAP_setParamsMenu = uimenu(handles.SetPar,'Text','Set LAP tracking Param
     'Separator','on',...
     'MenuSelectedFcn',@(hObject,eventdata)QuantiTrack('LAP_setParamsMenu_Callback',hObject,eventdata,guidata(hObject)));
 
-handles.MTT_setParamsMenu = uimenu(handles.SetPar,'Text','Set MTT Tracking Parameters',...
-    'MenuSelectedFcn',@(hObject,eventdata)QuantiTrack('MTT_setParamsMenu_Callback',hObject,eventdata,guidata(hObject)));
+% handles.MTT_setParamsMenu = uimenu(handles.SetPar,'Text','Set MTT Tracking Parameters',...
+%     'MenuSelectedFcn',@(hObject,eventdata)QuantiTrack('MTT_setParamsMenu_Callback',hObject,eventdata,guidata(hObject)));
 
 %Tools menu
 handles.ToolMenu = uimenu(handles.figure1,'Text','Tools');
