@@ -59,7 +59,7 @@ handles = QT_menuSetup(handles);
 handles.output = hObject;
 
 %Check if parallel computing toolbox is available
-gui_version_str = 'v2026.09.29';
+gui_version_str = 'v2026.10.27';
 VER = ver;
 
 
@@ -535,6 +535,7 @@ end
 if isfield(handles.Process,'ROIpos')
     if ~isempty(handles.Process.ROIpos)
         set(handles.findpeakButton,'Enable','on');
+        set(handles.DetectThreshScan,'Enable','on');
     end
 end
 close(fwait);
@@ -674,6 +675,7 @@ if fileName ~= 0
 
     % Disable Find Particles and subsequent steps
     set(handles.findpeakButton,'Enable','off');
+    set(handles.DetectThreshScan,'Enable','off');
     set(handles.trackButton,'Enable','off');
     set(handles.Track_Preprocess,'Enable','off');
     set(handles.HistD_Analysis,'Enable','off');
@@ -2278,7 +2280,7 @@ if handles.Data.nImages > 1
     set(handles.imageSlider, 'SliderStep', [1/(handles.Data.nImages-1)...
         1/(handles.Data.nImages-1)]);
     % Set Image counter
-    set(handles.imageCounter, 'String', ['Image ', ...
+    set(handles.imageCounter, 'String', ['Image ', ...kButton,'Enable','off');
         num2str(handles.Current.Ix),'/',num2str(handles.Data.nImages)]);
 end
 
@@ -2297,6 +2299,7 @@ if isfield(handles.Process, 'filterStack')
     set(handles.filterTypePopup,'Value',handles.Process.filterType);
     set(handles.filterTypePopup,'Enable','on');
     set(handles.findpeakButton,'Enable','on');
+    set(handles.DetectThreshScan,'Enable','on');
     handles.Process.clims = [min(min(handles.Process.filterStack(handles.Current.Ix).data)) ...
         max(max(handles.Process.filterStack(handles.Current.Ix).data))];
     set(handles.SaveFilterMenu,'Enable','on');
@@ -4116,6 +4119,7 @@ if FileName ~= 0
                 plotROI(ROI);
                 set(handles.ROIList,'String',ROI_list);
                 set(handles.findpeakButton,'Enable','on');
+                set(handles.DetectThreshScan,'Enable','on');
             end
         end
     end
@@ -6166,6 +6170,7 @@ if strcmp(replaceFilt,'Yes')
     end
     %Enable the find Peaks controls
     set(handles.findpeakButton,'Enable','on');
+    set(handles.DetectThreshScan,'Enable','on');
     set(handles.fitPSF,'Enable','on');
     set(handles.thresholdEdit,'Enable','on');
     set(handles.windowEdit,'Enable','on');
@@ -6365,11 +6370,13 @@ if val == 1
     set(handles.filterButton,'Enable','on');
     if ~isfield(handles.Process,'filterStack')
         set(handles.findpeakButton,'Enable','off');
+        set(handles.DetectThreshScan,'Enable','off');
         set(handles.thresholdEdit,'Enable','off');
         set(handles.windowEdit,'Enable','off');
         set(handles.fitPSF,'Enable','off');
     else
         set(handles.findpeakButton,'Enable','on');
+        set(handles.DetectThreshScan,'Enable','on');
         set(handles.thresholdEdit,'Enable','on');
         set(handles.windowEdit,'Enable','on');
         set(handles.fitPSF,'Enable','on');
@@ -6384,11 +6391,13 @@ elseif val ==2
     set(handles.filterButton,'Enable','on');
     if ~isfield(handles.Process,'filterStack')
         set(handles.findpeakButton,'Enable','off');
+        set(handles.DetectThreshScan,'Enable','off');
         set(handles.thresholdEdit,'Enable','off');
         set(handles.windowEdit,'Enable','off');
         set(handles.fitPSF,'Enable','off');
     else
         set(handles.findpeakButton,'Enable','on');
+        set(handles.DetectThreshScan,'Enable','on');
         set(handles.thresholdEdit,'Enable','on');
         set(handles.windowEdit,'Enable','on');
         set(handles.fitPSF,'Enable','on');
@@ -6400,6 +6409,7 @@ elseif val == 3
     set(handles.thresholdEdit,'Enable','off');
     set(handles.fitPSF,'Enable','off','Value',0);
     set(handles.findpeakButton,'Enable','on');
+    set(handles.DetectThreshScan,'Enable','on');
 
     set(handles.windowEdit,'String','7','Enable','on');
 
@@ -7013,6 +7023,7 @@ if RefFile ~= 0
 
     if isfield(handles.Process,'filterStack')
         set(handles.findpeakButton,'Enable','on');
+        set(handles.DetectThreshScan,'Enable','on');
     end
     drawnow;
     waitbar(1,fwait,'Calculating Mask');
@@ -8961,6 +8972,7 @@ end
 
 if isfield(handles.Process,'filterStack')
     set(handles.findpeakButton,'Enable','on');
+    set(handles.DetectThreshScan,'Enable','on');
 end
 drawnow;
 
@@ -8995,3 +9007,39 @@ SpotOn_Parameters_App(PathName,FileName,handles.useParallel,get(gcf,'Position'))
 
 guidata(hObject,handles);
 
+function DetThreshScan_Callback(hObject, eventdata, handles)
+% Force the user to verify the Acquisition parameters
+verAns = questdlg('Please verify that the Acquisition Parameters are valid','Parameter Verification','Continue','Cancel','Continue');
+if strcmp(verAns,'Cancel')
+    return
+end
+
+
+defPar(1) = 100;
+defPar(2) = 500;
+defPar(3) = 50;
+
+
+defaults = {num2str(defPar(1)), num2str(defPar(2)), num2str(defPar(3))};
+prompt = {'Minimum Threshold in scan',...
+    'Maximum Threshold in scan',...
+    'Step size for scan'};
+dlgtitle = 'Parameters for Threshold scan';
+detectionParam = inputdlg(prompt,dlgtitle, 1, defaults);
+
+
+detParam.hiBP = str2double(get(handles.hpEdit,'String'));
+detParam.windowSz = str2double(get(handles.windowEdit,'String'));
+detParam.loThresh = str2double(detectionParam{1});
+detParam.hiThresh = str2double(detectionParam{2});
+detParam.ThStepSize = str2double(detectionParam{3});
+detParam.useParallel = handles.useParallel;
+
+
+imgParam.pxSize = handles.Parameters.Acquisition.pixelSize;
+imgParam.objNA = handles.Parameters.Acquisition.NA;
+imgParam.lambda =handles.Parameters.Acquisition.EmWavelength;
+
+ks_stat = QT_particleThresholdScan(handles.Data.imageStack,handles.Process.filterStack,handles.Process.ROIimage,imgParam,detParam,1);
+
+guidata(hObject,handles);
