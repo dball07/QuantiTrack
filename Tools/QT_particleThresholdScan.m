@@ -112,4 +112,6 @@ if plotFlag == 1
     ylabel('KS (signal,bg)');
 end
 
+dy_dx = diff(ks_stat(:,2))./diff(ks_stat(:,1));
+
 th_optimal = 0;

@@ -59,7 +59,7 @@ handles = QT_menuSetup(handles);
 handles.output = hObject;
 
 %Check if parallel computing toolbox is available
-gui_version_str = 'v2026.10.27';
+gui_version_str = 'v2026.11.20';
 VER = ver;
 
 
@@ -554,7 +554,11 @@ function loadButton_Callback(hObject, eventdata, handles)
 % Load the image.
 title_str = 'Select stack for read out';
 if ~ispc; menu(title_str,'OK'); end
-[fileName,pathName]  = uigetfile('*.tif',title_str);
+if isfield(handles.Data,'pathName')
+    [fileName,pathName]  = uigetfile('*.tif',title_str, handles.Data.pathName);
+else
+    [fileName,pathName]  = uigetfile('*.tif',title_str);
+end
 if fileName ~= 0
     set(handles.StatusText,'String','Reading Image...');
     
@@ -9041,5 +9045,6 @@ imgParam.objNA = handles.Parameters.Acquisition.NA;
 imgParam.lambda =handles.Parameters.Acquisition.EmWavelength;
 
 ks_stat = QT_particleThresholdScan(handles.Data.imageStack,handles.Process.filterStack,handles.Process.ROIimage,imgParam,detParam,1);
+
 
 guidata(hObject,handles);
